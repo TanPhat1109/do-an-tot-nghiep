@@ -1,10 +1,13 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
 import '../../../data/repositories/auth_repository.dart';
 import '../../auth/screens/auth_screen.dart';
+
+import '../services/chat_service.dart';
+import '../widgets/chat_app_bar.dart';
+import '../widgets/chat_history_drawer.dart';
+import '../widgets/chat_message_bubble.dart';
+import '../widgets/chat_input_bar.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -14,23 +17,209 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  // API FastAPI
-  static const String chatApi = 'http://127.0.0.1:8000/api/ai/chat';
+  final ChatService _chatService = ChatService();
+  final AuthRepository _authRepo = AuthRepository();
 
-  final List<Map<String, dynamic>> _messages = [
-    {
-      'sender': 'bot',
-      'text': 'Xin chào! Tôi là trợ lý AI RAG. Bạn muốn hỏi điều gì hôm nay?',
-      'sources': [],
-    },
-  ];
+  final List<Map<String, dynamic>> _messages = [];
+  final List<Map<String, dynamic>> _conversations = [];
 
   final _inputController = TextEditingController();
   final _scrollController = ScrollController();
-  final _authRepo = AuthRepository();
 
   int? _conversationId;
+  String _conversationTitle = 'Cuộc trò chuyện mới';
+
   bool _isLoading = false;
+  bool _isLoadingHistory = false;
+  bool _isDark = false;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _messages.add(_welcomeMessage());
+    _loadConversations();
+  }
+
+  Map<String, dynamic> _welcomeMessage() {
+    return {
+      'sender': 'bot',
+      'text': 'Xin chào! Tôi là trợ lý AI RAG. Bạn muốn hỏi điều gì hôm nay?',
+      'sources': [],
+    };
+  }
+
+  // ==========================================
+  // 1. TẢI LỊCH SỬ TRÒ CHUYỆN
+  // ==========================================
+
+  Future<void> _loadConversations() async {
+    if (_isLoadingHistory) return;
+
+    setState(() {
+      _isLoadingHistory = true;
+    });
+
+    try {
+      final data = await _chatService.getConversations();
+
+      if (!mounted) return;
+
+      setState(() {
+        _conversations
+          ..clear()
+          ..addAll(data);
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      _showMessage('Lỗi tải lịch sử: ${_errorText(e)}');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingHistory = false;
+        });
+      }
+    }
+  }
+
+  // ==========================================
+  // 2. TẠO CUỘC TRÒ CHUYỆN MỚI
+  // ==========================================
+
+  Future<void> _createNewConversation() async {
+    if (_isLoading) return;
+
+    try {
+      final data = await _chatService.createConversation();
+
+      if (!mounted) return;
+
+      setState(() {
+        _conversationId = data['conversation_id'];
+        _conversationTitle = data['title'] ?? 'Cuộc trò chuyện mới';
+
+        _messages
+          ..clear()
+          ..add(_welcomeMessage());
+
+        _inputController.clear();
+      });
+
+      await _loadConversations();
+      _scrollToBottom();
+    } catch (e) {
+      if (!mounted) return;
+      _showMessage('Lỗi: ${_errorText(e)}');
+    }
+  }
+
+  // ==========================================
+  // 3. MỞ CUỘC TRÒ CHUYỆN CŨ
+  // ==========================================
+
+  Future<void> _openConversation(int conversationId) async {
+    if (_isLoading) return;
+
+    Navigator.pop(context);
+
+    try {
+      final data = await _chatService.getConversation(conversationId);
+
+      if (!mounted) return;
+
+      final List<dynamic> history = data['messages'] ?? [];
+
+      setState(() {
+        _conversationId = conversationId;
+        _conversationTitle = data['title'] ?? 'Cuộc trò chuyện mới';
+
+        _messages.clear();
+
+        if (history.isEmpty) {
+          _messages.add(_welcomeMessage());
+        } else {
+          for (final message in history) {
+            _messages.add({
+              'sender': message['sender_type'],
+              'text': message['content'],
+              'sources': [],
+            });
+          }
+        }
+
+        _inputController.clear();
+      });
+
+      _scrollToBottom();
+    } catch (e) {
+      if (!mounted) return;
+      _showMessage('Lỗi: ${_errorText(e)}');
+    }
+  }
+
+  // ==========================================
+  // 4. ĐỔI TÊN HỘI THOẠI
+  // ==========================================
+
+  Future<void> _renameConversation(int conversationId, String newTitle) async {
+    try {
+      await _chatService.renameConversation(conversationId, newTitle);
+
+      if (!mounted) return;
+
+      if (_conversationId == conversationId) {
+        setState(() {
+          _conversationTitle = newTitle;
+        });
+      }
+
+      await _loadConversations();
+
+      if (!mounted) return;
+
+      _showMessage('Đổi tên thành công.');
+    } catch (e) {
+      if (!mounted) return;
+      _showMessage('Lỗi: ${_errorText(e)}');
+    }
+  }
+
+  // ==========================================
+  // 5. XÓA HỘI THOẠI
+  // ==========================================
+
+  Future<void> _deleteConversation(int conversationId) async {
+    try {
+      await _chatService.deleteConversation(conversationId);
+
+      if (!mounted) return;
+
+      if (_conversationId == conversationId) {
+        setState(() {
+          _conversationId = null;
+          _conversationTitle = 'Cuộc trò chuyện mới';
+
+          _messages
+            ..clear()
+            ..add(_welcomeMessage());
+        });
+      }
+
+      await _loadConversations();
+
+      if (!mounted) return;
+
+      _showMessage('Đã xóa hội thoại.');
+    } catch (e) {
+      if (!mounted) return;
+      _showMessage('Lỗi: ${_errorText(e)}');
+    }
+  }
+
+  // ==========================================
+  // 6. GỬI CÂU HỎI CHO CHATBOT RAG
+  // ==========================================
 
   Future<void> _sendMessage() async {
     final text = _inputController.text.trim();
@@ -48,58 +237,28 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
 
     try {
-      // 1. Lấy JWT đã lưu khi đăng nhập
-      final token = await _authRepo.getToken();
-
-      if (token == null || token.isEmpty) {
-        throw Exception('Bạn chưa đăng nhập. Vui lòng đăng nhập lại.');
-      }
-
-      // 2. Tạo dữ liệu gửi lên FastAPI
-      final body = {'question': text, 'conversation_id': _conversationId};
-
-      // 3. Gọi API Chat RAG
-      final response = await http
-          .post(
-            Uri.parse(chatApi),
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-              'Authorization': 'Bearer $token',
-            },
-            body: jsonEncode(body),
-          )
-          .timeout(const Duration(seconds: 120));
+      final data = await _chatService.sendMessage(text, _conversationId);
 
       if (!mounted) return;
 
-      final data = jsonDecode(utf8.decode(response.bodyBytes));
-
-      if (response.statusCode == 200) {
-        // 4. Lưu conversation ID để tiếp tục hội thoại
+      setState(() {
         _conversationId = data['conversation_id'];
 
-        final answer = data['answer'] ?? 'AI chưa có câu trả lời.';
-
-        final sources = data['sources'] ?? [];
-
-        setState(() {
-          _messages.add({'sender': 'bot', 'text': answer, 'sources': sources});
+        _messages.add({
+          'sender': 'bot',
+          'text': data['answer'] ?? 'AI chưa có câu trả lời.',
+          'sources': data['sources'] ?? [],
         });
-      } else if (response.statusCode == 401) {
-        throw Exception('Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
-      } else if (response.statusCode == 403) {
-        throw Exception('Bạn không có quyền thực hiện thao tác này.');
-      } else {
-        throw Exception(data['detail'] ?? 'Không thể kết nối AI Backend.');
-      }
+      });
+
+      await _loadConversations();
     } catch (e) {
       if (!mounted) return;
 
       setState(() {
         _messages.add({
           'sender': 'bot',
-          'text': 'Lỗi: ${e.toString().replaceFirst('Exception: ', '')}',
+          'text': 'Lỗi: ${_errorText(e)}',
           'sources': [],
         });
       });
@@ -108,10 +267,15 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() {
           _isLoading = false;
         });
+
         _scrollToBottom();
       }
     }
   }
+
+  // ==========================================
+  // 7. CUỘN XUỐNG CUỐI
+  // ==========================================
 
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -125,6 +289,10 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  // ==========================================
+  // 8. ĐĂNG XUẤT
+  // ==========================================
+
   Future<void> _logout() async {
     await _authRepo.logout();
 
@@ -136,137 +304,134 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  @override
-  void dispose() {
-    _inputController.dispose();
-    _scrollController.dispose();
-    super.dispose();
+  // ==========================================
+  // 9. CHUYỂN ĐỔI GIAO DIỆN SÁNG / TỐI
+  // ==========================================
+
+  void _toggleTheme() {
+    setState(() {
+      _isDark = !_isDark;
+    });
   }
+
+  // ==========================================
+  // 10. HIỂN THỊ THÔNG BÁO
+  // ==========================================
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  String _errorText(Object error) {
+    return error.toString().replaceFirst('Exception: ', '');
+  }
+
+  // ==========================================
+  // 11. BUILD
+  // ==========================================
 
   @override
   Widget build(BuildContext context) {
+    final backgroundColor = _isDark
+        ? const Color(0xFF0D1522)
+        : const Color(0xFFF7F8FC);
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Q&A RAG Chatbot'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout, color: Colors.redAccent),
-            onPressed: _logout,
-            tooltip: 'Đăng xuất',
-          ),
-        ],
+      backgroundColor: backgroundColor,
+
+      appBar: ChatAppBar(
+        title: _conversationTitle,
+        isDark: _isDark,
+        onToggleTheme: _toggleTheme,
+        onNewConversation: _createNewConversation,
+      ),
+
+      drawer: ChatHistoryDrawer(
+        conversations: _conversations,
+        currentConversationId: _conversationId,
+        isDark: _isDark,
+        isLoading: _isLoadingHistory,
+
+        onNewConversation: () {
+          Navigator.pop(context);
+          _createNewConversation();
+        },
+
+        onRefresh: _loadConversations,
+
+        onOpenConversation: _openConversation,
+
+        onRenameConversation: _renameConversation,
+
+        onDeleteConversation: _deleteConversation,
+
+        onLogout: _logout,
       ),
 
       body: Column(
         children: [
           Expanded(
-            child: ListView.builder(
-              controller: _scrollController,
-              padding: const EdgeInsets.all(16),
-              itemCount: _messages.length + (_isLoading ? 1 : 0),
-              itemBuilder: (context, index) {
-                if (_isLoading && index == _messages.length) {
-                  return const Align(
-                    alignment: Alignment.centerLeft,
-                    child: Padding(
-                      padding: EdgeInsets.all(12),
-                      child: Text('AI đang suy nghĩ...'),
+            child: _messages.isEmpty
+                ? const SizedBox.shrink()
+                : ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 20,
                     ),
-                  );
-                }
-
-                final msg = _messages[index];
-                final isUser = msg['sender'] == 'user';
-
-                return Align(
-                  alignment: isUser
-                      ? Alignment.centerRight
-                      : Alignment.centerLeft,
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(vertical: 5),
-                    padding: const EdgeInsets.all(12),
-                    constraints: BoxConstraints(
-                      maxWidth: MediaQuery.of(context).size.width * 0.80,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isUser
-                          ? Theme.of(context).colorScheme.primary
-                          : Colors.grey.shade200,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        SelectableText(
-                          msg['text'].toString(),
-                          style: TextStyle(
-                            color: isUser ? Colors.white : Colors.black87,
-                          ),
-                        ),
-
-                        // Hiển thị nguồn tài liệu RAG
-                        if (!isUser && (msg['sources'] as List).isNotEmpty) ...[
-                          const Divider(),
-                          const Text(
-                            'Nguồn tài liệu tham khảo:',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13,
-                            ),
-                          ),
-                          const SizedBox(height: 5),
-
-                          ...(msg['sources'] as List).map((source) {
-                            return Padding(
-                              padding: const EdgeInsets.only(bottom: 5),
-                              child: Text(
-                                '• ${source['filename']} '
-                                '(độ tương đồng: '
-                                '${((source['similarity'] ?? 0) * 100).toStringAsFixed(1)}%)',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.blueGrey,
+                    itemCount: _messages.length + (_isLoading ? 1 : 0),
+                    itemBuilder: (context, index) {
+                      if (_isLoading && index == _messages.length) {
+                        return Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Row(
+                            children: [
+                              const SizedBox(
+                                width: 17,
+                                height: 17,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
                                 ),
                               ),
-                            );
-                          }),
-                        ],
-                      ],
-                    ),
+                              const SizedBox(width: 12),
+                              Text(
+                                'AI đang suy nghĩ...',
+                                style: TextStyle(
+                                  color: _isDark
+                                      ? Colors.white70
+                                      : Colors.black54,
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }
+
+                      return ChatMessageBubble(
+                        message: _messages[index],
+                        isDark: _isDark,
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
 
-          Container(
-            padding: const EdgeInsets.all(8),
-            color: Colors.white,
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _inputController,
-                    enabled: !_isLoading,
-                    decoration: const InputDecoration(
-                      hintText: 'Nhập câu hỏi tri thức...',
-                      border: OutlineInputBorder(),
-                    ),
-                    onSubmitted: (_) => _sendMessage(),
-                  ),
-                ),
-
-                const SizedBox(width: 8),
-
-                IconButton.filled(
-                  onPressed: _isLoading ? null : _sendMessage,
-                  icon: const Icon(Icons.send),
-                ),
-              ],
-            ),
+          ChatInputBar(
+            controller: _inputController,
+            onSend: _sendMessage,
+            isLoading: _isLoading,
+            isDark: _isDark,
           ),
         ],
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _inputController.dispose();
+    _scrollController.dispose();
+    super.dispose();
   }
 }
